@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CTAP2.2 Hybrid Tunnel ID Domain Calculator</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@2.6.0/dist/full.css" rel="stylesheet" type="text/css"/>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .txt-block > p {
+            margin-bottom: 1rem;
+        }
+
+        .txt-block > ul {
+            margin-left: 1rem;
+        }
+
+        .txt-block > ul > li {
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-white">
+    <main class="max-w-4xl mx-auto flex flex-row">
+        <section class="basis-3/4 flex p-4 m-3 rounded-lg shadow-lg mt-8 mr-6 text-black bg-white ">
+            <div class="min-w-full">
+                <h1 class="text-xl mb-4">Hybrid(CabLE) Tunnel eTLD calculator</h1>
+                <div class="p-4 txt-block">
+
+                        <p>If you wish to run your own tunnel server for CTAP Hybrid(CabLE) transport you need an index domain. Hybrid tunnel services are indexed by uint16 id.</p>
+                        <p>Service IDs from 0-255 are assigned by FIDO Alliance withing CTAP2.2 spec. (<a class="text-indigo-700" href="https://fidoalliance.org/specs/fido-v2.2-rd-20241003/fido-client-to-authenticator-protocol-v2.2-rd-20241003.html#sctn-hybrid">Search assignedTunnelServerDomains in CTAP2.2 RD</a>)</p>
+
+                        <p>However if you want to run your own tunnel indepent of the assigned list, CTAP2.2 has a neat algorithm to hash derive domain name from index that is larger than 255</p>
+
+                        <p>Here is how it works</p>
+
+
+                        <ul>
+                            <li>1. Select index larger than 255, let's say 265</li>
+                            <li>2. Concat []byte("caBLEv2 tunnel server domain") and little endian Uint16 index, []byte{0x10, 0x09}</li>
+                            <li>3. Hash the result with SHA256</li>
+                            <li>4. Take first 8 bytes of the hash, and convert to Uint64</li>
+                            <li>5. Compute tldIndex by taking mod 3. This would give you a random choice of one of tld: [".com", ".org", ".net", ".info"]</li>
+                            <li>6. Discart two first bits that were used for tldIndex, and compute domain by converting the rest of the bytes to base32</li>
+                            <li>7. Concat domain and tld to get your domain</li>
+                            <li>8. Prepend "cable.", and that should give you your tunnel origin</li>
+                            
+                        </ul>
+                </div>
+                <div class="p-4">
+                    <div class="flex items-center p-4">
+                        <label class="block min-w-full">
+                            <span class="after:content-['*'] after:ml-0.5 after:text-red-500 block text-sm font-medium text-slate-700">
+                                Choose your tunnelID (index) from 256 to 4096
+                            </span>
+                            <input type="number" min="256" max="4096" placeholder="256" value="256" name="indexfield" class="mt-1 px-3 py-2 bg-white border shadow-sm border-slate-300 placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-sky-500 block w-full rounded-md sm:text-sm focus:ring-1" />
+                        </label>
+                    </div>
+                    <div class="flex items-center p-4">
+                        <h3 class="text-lg">Calculated Domain: <span id="calculatedDomain"></span><span id="domainCheckStatus"></span</h3>
+                    </div>
+                    <div class="flex items-center p-4">
+                        <button id="checkavailability" class="btn btn-primary">Check availability</button>
+                    </div>
+                </div>
+
+                <div class="p-4">
+                    <div class="flex items">
+                        <div class="flex items-center">
+                            <p>Open <a class="text-indigo-700" href="https://fidoalliance.org/specs/fido-v2.2-rd-20241003/fido-client-to-authenticator-protocol-v2.2-rd-20241003.html#hybrid-qr-initiated">Client to Authenticator Protocol (CTAP) 2.2
+                                Review Draft, October 03, 2024</a></p>
+                        </div>
+                    </div>
+                    <br>
+                    <div class="flex items">
+                        <div class="flex items-center">
+                            <p><a class="text-indigo-700" href="https://daryascam.info/">Copyright Yuriy Ackermann for Project DaryaScam</a></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+
+    <script>
+
+        const calculatedDomainField = document.getElementById('calculatedDomain');
+        const domainCheckStatusField = document.getElementById('domainCheckStatus');
+        const assignedDomains = ["cable.ua5v.com", "cable.auth.com"]
+        const domainPrefix = "cable."
+
+        var latestdomain = ""
+
+        document.getElementsByName('indexfield')[0].addEventListener('change', 
+            async (e) => {
+                domainCheckStatusField.innerText = "";
+                if (e.target.value < 256) {
+                    const domain = assignedDomains[e.target.value];
+                    if (!domain) {
+                        calculatedDomainField.innerText = "Invalid index. No domain assigned. Latest index is " + (assignedDomains.length - 1);
+                        return;
+                    }
+
+                    latestdomain = assignedDomains[e.target.value]
+
+                    calculatedDomainField.innerText = "ASSIGNED DOMAIN " + latestdomain;
+                    return;
+                }
+
+                latestdomain = await calculateHybridTunnelDomain(e.target.value);
+                calculatedDomainField.innerText = `${domainPrefix}${latestdomain}`;
+            });
+
+
+        document.getElementById('checkavailability').addEventListener('click', async () => {
+            if (!latestdomain) {
+                return;
+            }
+
+            const url = 'https://dns.google/resolve?name=' + latestdomain;
+
+            domainCheckStatusField.innerText = "Checking availability...";
+            const response = await fetch(url);
+            const data = await response.json();
+            if (data.Status == 3) {
+                domainCheckStatusField.innerText = " is available";
+            } else {
+                domainCheckStatusField.innerText = " is not available";
+            }
+        });
+
+
+        var bigIntToBase32 = (biNum) => {
+            const base32 = 'abcdefghijklmnopqrstuvwxyz234567';
+            let result = '';
+            while (biNum > 0n) {
+                result += base32[Number(biNum & 31n)];
+                biNum >>= 5n;
+            }
+            return result;
+        }
+
+        var calculateHybridTunnelDomain = async (index) => {
+            const allowedTlds = [".com", ".org", ".net", ".info"]
+            const hashPrefix = "caBLEv2 tunnel server domain";
+            const indexBytes = new Uint8Array([index, index >> 8, 0x00]);
+
+            // Data
+            const data = new Uint8Array(hashPrefix.length + 3);
+            data.set(hashPrefix.split('').map(c => c.charCodeAt(0)), 0);
+            data.set(indexBytes, hashPrefix.length);
+
+            // Hash
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashUint8 = new Uint8Array(hashBuffer);
+
+            // Digest slice
+            const digest = hashUint8.slice(0, 8);
+            const view = new DataView(digest.buffer);
+        
+            const digestBigInt = view.getBigUint64(0, true);
+
+            console.log(digestBigInt);
+
+            // Base32 encode
+            const tldIndex = Number(digestBigInt & 3n);
+            const domain = bigIntToBase32(digestBigInt>>2n);
+
+            const tld = allowedTlds[tldIndex&3];
+
+            return domain + tld;
+        }
+
+
+    </script>
+
+</body>
+</html>
